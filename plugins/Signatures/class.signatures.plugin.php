@@ -57,14 +57,16 @@ class SignaturesPlugin extends Gdn_Plugin {
             break;
       }
    }
-   
+
+   /**
+    * Add "Signature Settings" to profile edit mode side menu.
+    *
+    * @param $Sender
+    */
    public function ProfileController_AfterAddSideMenu_Handler($Sender) {
-      if (!Gdn::Session()->CheckPermission(array(
-         'Garden.SignIn.Allow'
-      ))) {
+      if (!CheckPermission('Garden.SignIn.Allow'))
          return;
-      }
-   
+
       $SideMenu = $Sender->EventArguments['SideMenu'];
       $ViewingUserID = Gdn::Session()->UserID;
       
@@ -73,6 +75,18 @@ class SignaturesPlugin extends Gdn_Plugin {
       } else {
          $SideMenu->AddLink('Options', Sprite('SpSignatures').' '.T('Signature Settings'), UserUrl($Sender->User, '', 'signature'), array('Garden.Users.Edit','Moderation.Signatures.Edit'), array('class' => 'Popup'));
       }
+   }
+
+   /**
+    * Add "Signature Settings" to Profile Edit button group.
+    * Only do this if they cannot edit profiles because otherwise they can't navigate there.
+    *
+    * @param $Sender
+    */
+   public function ProfileController_BeforeProfileOptions_Handler($Sender, $Args) {
+      $CanEditProfiles = CheckPermission('Garden.Users.Edit') || CheckPermission('Moderation.Profiles.Edit');
+      if (CheckPermission('Moderation.Signatures.Edit') && !$CanEditProfiles)
+         $Args['ProfileOptions'][] = array('Text' => Sprite('SpSignatures').' '.T('Signature Settings'), 'Url' => UserUrl($Sender->User, '', 'signature'));
    }
    
    /**
@@ -101,7 +115,7 @@ class SignaturesPlugin extends Gdn_Plugin {
       
       list($UserReference, $Username) = $Args;
       
-      $canEditSignatures = Gdn::Session()->CheckPermission('Plugins.Signatures.Edit');
+      $canEditSignatures = CheckPermission('Plugins.Signatures.Edit');
       
       $Sender->GetUserInfo($UserReference, $Username);
       $UserPrefs = Gdn_Format::Unserialize($Sender->User->Preferences);
@@ -165,21 +179,30 @@ class SignaturesPlugin extends Gdn_Plugin {
                $FrmValues[$this->MakeMetaKey('Format')] = NULL;
             }
             
-            foreach ($FrmValues as $UserMetaKey => $UserMetaValue) {
-               $Key = $this->TrimMetaKey($UserMetaKey);
-               
-               switch ($Key) {
-                  case 'Format':
-                     if (strcasecmp($UserMetaValue, 'Raw') == 0)
-                        $UserMetaValue = NULL; // don't allow raw signatures.
-                  break;
+            // Validate the signature.
+            if (function_exists('ValidateSignature')) {
+               $Sig = trim(GetValue($this->MakeMetaKey('Sig'), $FrmValues));
+               if (ValidateRequired($Sig) && !ValidateSignature($Sig, GetValue($this->MakeMetaKey('Format'), $FrmValues))) {
+                  $Sender->Form->AddError('Signature invalid.');
                }
-               
-               $this->SetUserMeta($SigUserID, $Key, $UserMetaValue);
+            }
+            
+            if ($Sender->Form->ErrorCount() == 0) {
+               foreach ($FrmValues as $UserMetaKey => $UserMetaValue) {
+                  $Key = $this->TrimMetaKey($UserMetaKey);
+
+                  switch ($Key) {
+                     case 'Format':
+                        if (strcasecmp($UserMetaValue, 'Raw') == 0)
+                           $UserMetaValue = NULL; // don't allow raw signatures.
+                     break;
+                  }
+
+                  $this->SetUserMeta($SigUserID, $Key, $UserMetaValue);
+               }
+               $Sender->InformMessage(T("Your changes have been saved."));
             }
          }
-         
-         $Sender->InformMessage(T("Your changes have been saved."));
       }
 
       $Sender->Render('signature', '', 'plugins/Signatures');
@@ -218,25 +241,39 @@ class SignaturesPlugin extends Gdn_Plugin {
       
       if ($Sender->Form->IsPostBack()) {
          $Sender->SetData('Success', FALSE);
-         foreach ($Translation as $TranslationField => $TranslationShortcut) {
-            $UserMetaValue = $Sender->Form->GetValue($TranslationShortcut, NULL);
-            if (is_null($UserMetaValue)) continue;
-            
-            if ($TranslationShortcut == 'Body' && empty($UserMetaValue))
-               $UserMetaValue = NULL;
-            
-            $Key = $this->TrimMetaKey($TranslationField);
-
-            switch ($Key) {
-               case 'Format':
-                  if (strcasecmp($UserMetaValue, 'Raw') == 0)
-                     $UserMetaValue = NULL; // don't allow raw signatures.
-               break;
+         
+         // Validate the signature.
+         if (function_exists('ValidateSignature')) {
+            $Sig = $Sender->Form->GetFormValue('Body');
+            $Format = $Sender->Form->GetFormValue('Format');
+            if (ValidateRequired($Sig) && !ValidateSignature($Sig, $Format)) {
+               $Sender->Form->AddError('Signature invalid.');
             }
-
-            $this->SetUserMeta($UserID, $Key, $UserMetaValue);
          }
-         $Sender->SetData('Success', TRUE);
+         
+         if ($Sender->Form->ErrorCount() == 0) {
+            foreach ($Translation as $TranslationField => $TranslationShortcut) {
+               $UserMetaValue = $Sender->Form->GetValue($TranslationShortcut, NULL);
+               if (is_null($UserMetaValue)) continue;
+
+               if ($TranslationShortcut == 'Body' && empty($UserMetaValue))
+                  $UserMetaValue = NULL;
+
+               $Key = $this->TrimMetaKey($TranslationField);
+
+               switch ($Key) {
+                  case 'Format':
+                     if (strcasecmp($UserMetaValue, 'Raw') == 0)
+                        $UserMetaValue = NULL; // don't allow raw signatures.
+                  break;
+               }
+
+               if ($Sender->Form->ErrorCount() == 0) {
+                  $this->SetUserMeta($UserID, $Key, $UserMetaValue);
+               }
+            }
+            $Sender->SetData('Success', TRUE);
+         }
       }
       
       $Sender->Render();
